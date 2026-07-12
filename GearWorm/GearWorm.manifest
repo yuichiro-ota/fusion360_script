@@ -1,0 +1,10 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "script",
+    "author": "Claude",
+    "description": {
+        "": "Parametric generator script: GearWorm"
+    },
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}
