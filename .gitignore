@@ -1,0 +1,7 @@
+# エディタ / ツール設定
+.vscode/
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
