@@ -348,7 +348,10 @@ def compute(p):
     t_ring = p['t_ring']
     t_cover = p['t_cover']
     t_crank = p['t_crank']
-    chamber = t_blade * p['blade_room']       # 羽根室の深さ
+    # 各羽根を板厚＋クリアランスのピッチで螺旋状に積層する。
+    blade_pitch = t_blade + cl
+    blade_stack = t_blade + (N - 1) * blade_pitch
+    chamber = blade_stack + cl                # 上面にもクリアランスを確保
     rim_h = chamber + t_ring + cl
 
     ring_out = Rp + Lb
@@ -458,7 +461,8 @@ def compute(p):
         th_open=th_open, th_close=th_close, d_theta=d_theta, d_phi=d_phi,
         r_pin_min=r_pin_min, r_pin_max=r_pin_max,
         t_base=t_base, t_blade=t_blade, t_ring=t_ring, t_cover=t_cover,
-        t_crank=t_crank, chamber=chamber, rim_h=rim_h, rim_w=rim_w,
+        t_crank=t_crank, chamber=chamber, blade_pitch=blade_pitch,
+        blade_stack=blade_stack, rim_h=rim_h, rim_w=rim_w,
         ring_in=ring_in, ring_out=ring_out, R_plate=R_plate,
         z_blade=z_blade, z_ring=z_ring, z_cover=z_cover, z_cover_top=z_cover_top,
         z_crank=z_crank, bracket_top=bracket_top,
@@ -556,39 +560,34 @@ def build_base(root, g):
 
 def build_blades(root, g):
     comp = new_comp(root, 'Blade')
-    b = Builder(comp)
 
-    alpha = g['alpha0']
-    th = g['theta_t']
-    ca, sa = u(alpha)
-    cd, sd = u(alpha + th)
-    P = (g['Rp'] * ca, g['Rp'] * sa)
-    C = (P[0] + g['d'] * cd, P[1] + g['d'] * sd)
-    Q = (P[0] - g['e'] * cd, P[1] - g['e'] * sd)
+    for i in range(g['N']):
+        # 平面上の組立角度はそのままに、羽根ごとにZを一段ずつ上げる。
+        b = Builder(comp)
+        alpha = g['alpha0'] + 360.0 * i / g['N']
+        z = g['z_blade'] + i * g['blade_pitch']
+        th = g['theta_t']
+        ca, sa = u(alpha)
+        cd, sd = u(alpha + th)
+        P = (g['Rp'] * ca, g['Rp'] * sa)
+        C = (P[0] + g['d'] * cd, P[1] + g['d'] * sd)
+        Q = (P[0] - g['e'] * cd, P[1] - g['e'] * sd)
 
-    ext = b.circle(P[0], P[1], g['Lb'], g['z_blade'], g['t_blade'], NEW)
-    body = ext.bodies.item(0)
-    body.name = 'Blade'
+        ext = b.circle(P[0], P[1], g['Lb'], z, g['t_blade'], NEW)
+        body = ext.bodies.item(0)
+        body.name = 'Blade {:02d}'.format(i + 1)
 
-    b.circle(C[0], C[1], g['Rb'], g['z_blade'] - 1.0, g['t_blade'] + 2.0, CUT)
+        b.circle(C[0], C[1], g['Rb'], z - 1.0,
+                 g['t_blade'] + 2.0, CUT)
 
-    # ドライブピン（リングのスロットまで届かせる）
-    post_h = g['chamber'] - g['t_blade'] + g['t_ring'] - 0.3
-    b.circle(Q[0], Q[1], g['pin_d'] / 2.0,
-             g['z_blade'] + g['t_blade'], post_h, JOIN)
+        # 各段の羽根からドライブリングまでピンを延ばす。
+        pin_top = g['z_ring'] + g['t_ring'] - 0.3
+        b.circle(Q[0], Q[1], g['pin_d'] / 2.0,
+                 z + g['t_blade'],
+                 pin_top - (z + g['t_blade']), JOIN)
 
-    # ピボット穴
-    b.circle(P[0], P[1], g['r_pin'] + g['cl'],
-             g['z_blade'] - 1.0, g['t_blade'] + 2.0, CUT)
-
-    col = adsk.core.ObjectCollection.create()
-    col.add(body)
-    pin = comp.features.circularPatternFeatures.createInput(
-        col, comp.zConstructionAxis)
-    pin.quantity = adsk.core.ValueInput.createByReal(g['N'])
-    pin.totalAngle = adsk.core.ValueInput.createByString('360 deg')
-    pin.isSymmetric = False
-    comp.features.circularPatternFeatures.add(pin)
+        b.circle(P[0], P[1], g['r_pin'] + g['cl'],
+                 z - 1.0, g['t_blade'] + 2.0, CUT)
     return comp
 
 
@@ -737,8 +736,6 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             ti.addValueInput('pin_d', 'ピン径', 'mm', val(3.0))
             ti.addValueInput('clearance', 'クリアランス', 'mm', val(0.3))
             ti.addValueInput('over_close', '全閉時の重なり代', 'mm', val(0.6))
-            ti.addFloatSpinnerCommandInput('blade_room', '羽根室の深さ（羽根板厚の倍数）',
-                                           '', 1.5, 6.0, 0.5, 2.5)
             gt.isExpanded = False
 
             on_changed = InputChangedHandler()
@@ -817,7 +814,6 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 t_cover=v('t_cover'), t_crank=v('t_crank'),
                 pin_d=v('pin_d'), clearance=v('clearance'),
                 over_close=v('over_close'),
-                blade_room=inputs.itemById('blade_room').value,
             )
             if p['ap_d'] < 8.0:
                 raise ValueError('開口直径は 8mm 以上にしてください。')
@@ -861,9 +857,8 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
             m.append('  サーボ軸の中心距離   : {:.1f} mm'.format(g['R_s']))
             m.append('  クランクアーム長     : {:.1f} mm'.format(g['L_c']))
             m.append('')
-            m.append('※ 羽根は実機同様、同一平面上で互いに重なる配置です')
-            m.append('   （CAD 上は干渉表示になります）。羽根は薄く出力し、')
-            m.append('   羽根室の深さで滑らせてください。')
+            m.append('※ 羽根は板厚＋クリアランスの間隔で螺旋状に積層されています。')
+            m.append('   羽根積層高さ         : {:.1f} mm'.format(g['blade_stack']))
             if warn:
                 m.append('')
                 m.append('【注意】')
